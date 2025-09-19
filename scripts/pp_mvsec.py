@@ -1,15 +1,12 @@
-import numpy as np
 import os
-import argparse
 import cv2
 import tqdm
-import glob
-import multiprocessing
 import h5py
-import yaml, shutil
-
-from utils.load_utils import compute_rmap_ecd, read_ecd_tss, compute_rmap_ecd
-from utils.viz_utils import render
+import yaml
+import shutil
+import argparse
+import numpy as np
+import multiprocessing
 
 
 def compute_rmap_mvsec(scenedir, fx, fy, cx, cy, k1, k2, k3, k4, side, H=260, W=346):
@@ -26,7 +23,6 @@ def compute_rmap_mvsec(scenedir, fx, fy, cx, cy, k1, k2, k3, k4, side, H=260, W=
     K_new_evs = cv2.fisheye.estimateNewCameraMatrixForUndistortRectify(K_evs, dist_coeffs_evs, (W, H), np.eye(3), balance=0)
     
     coords = np.stack(np.meshgrid(np.arange(W), np.arange(H))).reshape((2, -1)).astype("float64")
-    term_criteria = (cv2.TERM_CRITERIA_MAX_ITER | cv2.TERM_CRITERIA_EPS, 100, 0.001)
     points = cv2.fisheye.undistortPoints(coords.T[:, None, :], K_evs, dist_coeffs_evs, P=K_new_evs)
     # cv2.undistortPointsIter(coords, K_evs, dist_coeffs_evs, np.eye(3), K_new_evs, criteria=term_criteria)
     rectify_map = points.reshape((H, W, 2))
@@ -78,7 +74,9 @@ def process_seq_mvsec(infilesh5, side="left"):
                 # continue
 
         # creating rectify map
-        with open(os.path.join(outdir, "../indoor_flying_calib/camchain-imucam-indoor_flying.yaml"), 'r') as file:
+        # with open(os.path.join(outdir, "../indoor_flying_calib/camchain-imucam-indoor_flying.yaml"), 'r') as file:
+        #     all_intr = yaml.safe_load(file)
+        with open(os.path.join(outdir, "../camchain-imucam-outdoor_day.yaml"), 'r') as file:
             all_intr = yaml.safe_load(file)
 
         camID = "cam0" if side == "left" else "cam1"

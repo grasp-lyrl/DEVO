@@ -349,9 +349,11 @@ class DEVO:
         # assert (dij==0).sum().item() == len(torch.unique(self.kk)) 
         # [DEBUG]
 
+        #! Need to use h5 files and not memory. For outdoor_day1_data this reaches upto 100GB in RAM
+        #! In fact they were storing flow in GPU, I changed it to RAM.
         coords_est = pops.transform(SE3(self.poses), self.patches, self.intrinsics, self.ii, self.jj, self.kk) # p_ij (B,close_edges,P,P,2)
-        self.flow_data[self.counter-1] = {"ii": self.ii, "jj": self.jj, "kk": self.kk,\
-                                          "coords_est": coords_est, "img": self.image_, "n": self.n}
+        self.flow_data[self.counter-1] = {"ii": self.ii.cpu().numpy(), "jj": self.jj.cpu().numpy(), "kk": self.kk.cpu().numpy(),\
+                                          "coords_est": coords_est.cpu().numpy(), "img": self.image_, "n": self.n}
 
         # import matplotlib.pyplot as plt
         # plt.figure()

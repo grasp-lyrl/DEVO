@@ -13,6 +13,7 @@ from natsort import natsorted
 import copy
 import math
 import shutil
+from tqdm import tqdm
 from scipy.spatial.transform import Rotation as R
 from tabulate import tabulate
 
@@ -110,7 +111,7 @@ def run_voxel_norm_seq(voxeldir, cfg, network, viz=False, iterator=None, timing=
 def run_voxel(voxeldir, cfg, network, viz=False, iterator=None, timing=False, H=480, W=640, viz_flow=False, scale=1.0, **kwargs): 
     slam = DEVO(cfg, network, evs=True, ht=H, wd=W, viz=viz, viz_flow=viz_flow, **kwargs)
     
-    for i, (voxel, intrinsics, t) in enumerate(iterator):
+    for i, (voxel, intrinsics, t) in tqdm(enumerate(iterator)):
         if timing and i == 0:
             t0 = torch.cuda.Event(enable_timing=True)
             t1 = torch.cuda.Event(enable_timing=True)

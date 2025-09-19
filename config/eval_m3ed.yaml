@@ -5,10 +5,10 @@ PATCHES_PER_FRAME: 96
 REMOVAL_WINDOW: 22
 OPTIMIZATION_WINDOW: 10
 PATCH_LIFETIME: 13
-BUFFER_SIZE: 16384 # 8192 for outdoor_day2, 4096 otherwise
+BUFFER_SIZE: 8192
 
 # threshold for keyframe removal
-KEYFRAME_THRESH: 15.0 # 5.0 for outdoor_day1
+KEYFRAME_THRESH: 15.0
 
 # camera motion model
 MOTION_MODEL: 'DAMPED_LINEAR'

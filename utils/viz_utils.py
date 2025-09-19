@@ -233,10 +233,23 @@ def viz_flow_inference(outdir, flow_data, debug=False, patch_thickness=4, line_w
         # if counter <= 8:
         #     continue
 
-        ii, jj, kk = flow_i["ii"].detach().cpu().numpy(), flow_i["jj"].detach().cpu().numpy(), flow_i["kk"].detach().cpu().numpy()
+        if isinstance(flow_i["ii"], torch.Tensor):
+            ii, jj, kk = flow_i["ii"].detach().cpu().numpy(), flow_i["jj"].detach().cpu().numpy(), flow_i["kk"].detach().cpu().numpy()
+        elif isinstance(flow_i["ii"], np.ndarray):
+            ii, jj, kk = flow_i["ii"], flow_i["jj"], flow_i["kk"]
+        else:
+            raise NotImplementedError
+
         # assert flow_i["n"] == ii.max() + 1
         ii, jj = ii+fidx-ii.max(), jj+fidx-jj.max()
-        coords_fidx = flow_i["coords_est"][0, ...].detach().cpu().numpy() * 4.0 # (768, 3, 3, 2)
+
+        if isinstance(flow_i["coords_est"], torch.Tensor):
+            coords_fidx = flow_i["coords_est"][0, ...].detach().cpu().numpy() * 4.0 # (768, 3, 3, 2)
+        elif isinstance(flow_i["coords_est"], np.ndarray):
+            coords_fidx = flow_i["coords_est"][0, ...] * 4.0 # (768, 3, 3, 2)
+        else:
+            raise NotImplementedError
+
         # [DEBUG]
         if debug:
             dij = abs(ii - jj)

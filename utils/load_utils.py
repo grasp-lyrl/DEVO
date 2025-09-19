@@ -6,6 +6,7 @@ import cv2
 import os.path as osp
 import torch.utils.data as data
 import multiprocessing
+import yaml
 import time
 import h5py
 import os
@@ -557,6 +558,20 @@ def video_iterator_parallel(imagedir, tss_file=None, ext=".png", intrinsics=[320
         yield image.cuda(), intrinsics.cuda(), ts_us
 
 
+def load_m3ed_traj(scenedir, side="left"):
+    from utils.pose_utils import poses_hom_to_quatlist
+    gt_fname = glob.glob(os.path.join(scenedir, "*_depth_gt.h5"))[0]
+    datain = h5py.File(gt_fname, 'r')
+
+    traj_hf = datain["Cn_T_C0"][:] # (N, 4, 4)
+    traj_hf = poses_hom_to_quatlist(np.linalg.inv(traj_hf)) # (N, 7)
+    tss_traj_us = datain["ts"][:].astype(np.float64) # (N,)
+
+    datain.close()
+
+    return np.array(tss_traj_us.tolist()), np.array(traj_hf)
+
+
 def load_mvsec_traj(scenedir, side="left"):
     from utils.pose_utils import poses_hom_to_quatlist
     gt_fname = os.path.join(scenedir, scenedir[:-5].split("/")[-1]+"_gt.hdf5")
@@ -823,6 +838,58 @@ def rpg_evs_iterator(scenedir, side="left", stride=1, dT_ms=None, H=180, W=240, 
     for (voxel, intrinsics, ts_us) in data_list:
         yield voxel.cuda(), intrinsics.cuda(), ts_us
 
+
+class M3EDEventDataset(data.Dataset):
+    def __init__(self, scenedir, side="left", H=260, W=346):
+        self.side = side
+        self.H = H
+        self.W = W
+
+        intrinsics = np.loadtxt(os.path.join(scenedir, f"calib_undist_{side}.txt"))
+        self.intrinsics = torch.from_numpy(np.array(intrinsics))
+
+        h5in = glob.glob(os.path.join(scenedir, "*_data.h5"))[0]
+        self.datain = h5py.File(h5in, 'r')
+
+        self.num_imgs = self.datain[f"ovc/{side}/data"].shape[0]
+        self.tss_imgs_us = self.datain["ovc/ts"][:]
+
+        rect_file = osp.join(scenedir, f"rectify_map_{side}.h5")
+        self.rectify_map = read_rmap(rect_file, H=H, W=W)
+
+        self.event_idxs = self.datain[f"ovc/ts_map_prophesee_{side}_t"]
+        self.all_evs = {
+            "x": self.datain[f"prophesee/{side}/x"],
+            "y": self.datain[f"prophesee/{side}/y"],
+            "t": self.datain[f"prophesee/{side}/t"],
+            "p": self.datain[f"prophesee/{side}/p"]
+        }
+
+    def __len__(self):
+        return self.num_imgs - 1
+
+    def __getitem__(self, idx):
+        img_i = idx + 1
+        evidx_left = self.event_idxs[img_i-1]
+        evid_nextimg = self.event_idxs[img_i]
+
+        evs_batch = {key: self.all_evs[key][evidx_left:evid_nextimg][:] for key in self.all_evs}
+
+        rect = self.rectify_map[evs_batch["y"].astype(np.int32), evs_batch["x"].astype(np.int32)]
+        voxel = to_voxel_grid(rect[..., 0], rect[..., 1], evs_batch["t"].astype(np.float64), 
+                             evs_batch["p"], H=self.H, W=self.W, nb_of_time_bins=5)
+
+        return voxel, self.intrinsics, self.tss_imgs_us[img_i]
+
+def m3ed_evs_iterator(scenedir, side="left", stride=1, timing=False, H=720, W=1280, num_workers=8):
+    dataset = M3EDEventDataset(scenedir, side, H, W)
+    dataloader = data.DataLoader(dataset, batch_size=1, shuffle=False, num_workers=num_workers, 
+                                pin_memory=True, collate_fn=lambda x: x[0], prefetch_factor=10)
+
+    for voxel, intrinsics, ts_us in dataloader:
+        yield voxel.cuda(), intrinsics.cuda(), ts_us
+
+
 def mvsec_evs_iterator(scenedir, side="left", stride=1, dT_ms=None, timing=False, H=260, W=346):
     if timing:
         t0 = torch.cuda.Event(enable_timing=True)
@@ -833,7 +900,7 @@ def mvsec_evs_iterator(scenedir, side="left", stride=1, dT_ms=None, timing=False
     fx, fy, cx, cy = intrinsics
     intrinsics = torch.from_numpy(np.array([fx, fy, cx, cy]))
 
-    h5in = glob.glob(os.path.join(scenedir, f"*_data.hdf5"))
+    h5in = glob.glob(os.path.join(scenedir, "*_data.hdf5"))
     assert len(h5in) == 1
     datain = h5py.File(h5in[0], 'r')
 
@@ -845,10 +912,10 @@ def mvsec_evs_iterator(scenedir, side="left", stride=1, dT_ms=None, timing=False
     rectify_map = read_rmap(rect_file, H=H, W=W)
 
     event_idxs = datain["davis"][side]["image_raw_event_inds"]
-    all_evs = datain["davis"][side]["events"][:]
+    all_evs = datain["davis"][side]["events"]
     evidx_left = 0
     data_list = []
-    for img_i in range(num_imgs):        
+    for img_i in range(1,num_imgs):        
         evid_nextimg = event_idxs[img_i]
         evs_batch = all_evs[evidx_left:evid_nextimg][:]
         evidx_left = evid_nextimg
@@ -870,6 +937,66 @@ def mvsec_evs_iterator(scenedir, side="left", stride=1, dT_ms=None, timing=False
 
     for (voxel, intrinsics, ts_us) in data_list:
         yield voxel.cuda(), intrinsics.cuda(), ts_us
+
+
+# def mvsec_evs_iterator(scenedir, side="left", stride=1, dT_ms=None, timing=False, H=260, W=346):
+#     if timing:
+#         t0 = torch.cuda.Event(enable_timing=True)
+#         t1 = torch.cuda.Event(enable_timing=True)
+#         t0.record()
+
+#     # intrinsics = np.loadtxt(os.path.join(scenedir, f"calib_undist_{side}.txt"))
+#     # fx, fy, cx, cy = intrinsics
+#     camchain_file = glob.glob(os.path.join(scenedir, "camchain-*.yaml"))[0]
+#     # read the yaml file
+#     with open(camchain_file, 'r') as f:
+#         camchain = yaml.safe_load(f)
+#     cam = "cam0" if side == "left" else "cam1"
+#     fx, fy, cx, cy = np.array(camchain[cam]['intrinsics'])
+#     intrinsics = torch.from_numpy(np.array([fx, fy, cx, cy]))
+
+#     h5in = glob.glob(os.path.join(scenedir, "*_data.hdf5"))
+#     assert len(h5in) == 1
+#     datain = h5py.File(h5in[0], 'r')
+
+#     num_imgs = datain["davis"][side]["image_raw"].shape[0]
+#     tss_imgs_us = datain["davis"][side]["image_raw_ts"][:].astype(np.float64)*1e6 # in us
+#     # tss_imgs_us = sorted(np.loadtxt(os.path.join(scenedir, f"tss_imgs_us_{side}.txt")))
+#     assert num_imgs == len(tss_imgs_us)
+
+#     # rect_file = osp.join(scenedir, f"rectify_map_{side}.h5")
+#     # rectify_map = read_rmap(rect_file, H=H, W=W)
+#     rectify_map_x = np.loadtxt(osp.join(scenedir, f"outdoor_day_{side}_x_map.txt"))
+#     rectify_map_y = np.loadtxt(osp.join(scenedir, f"outdoor_day_{side}_y_map.txt"))
+#     rectify_map = np.stack((rectify_map_x, rectify_map_y), axis=-1) # (H, W, 2)
+
+#     event_idxs = datain["davis"][side]["image_raw_event_inds"]
+#     all_evs = datain["davis"][side]["events"]
+#     evidx_left = 0
+#     data_list = []
+#     for img_i in range(1,num_imgs): # somehow event_idxs[0] = -1
+#         evid_nextimg = event_idxs[img_i]
+#         evs_batch = all_evs[evidx_left:evid_nextimg][:]
+#         evidx_left = evid_nextimg
+#         rect = rectify_map[evs_batch[:, 1].astype(np.int32), evs_batch[:, 0].astype(np.int32)]
+
+#         voxel = to_voxel_grid(rect[..., 0], rect[..., 1], evs_batch[:, 2], evs_batch[:, 3], H=H, W=W, nb_of_time_bins=5)
+#         # visualize_voxel(voxel)
+#         data_list.append((voxel, intrinsics, tss_imgs_us[img_i]))
+
+
+#     datain.close()
+
+#     if timing:
+#         t1.record()
+#         torch.cuda.synchronize()
+#         dt = t0.elapsed_time(t1)/1e3
+#         print(f"Preloaded {len(data_list)} MVSEC-voxels in {dt} secs, e.g. {len(data_list)/dt} FPS")
+#     print(f"Preloaded {len(data_list)} MVSEC-voxels, imstart={0}, imstop={-1}, stride={1}, dT_ms={dT_ms} on {scenedir}")
+
+#     for (voxel, intrinsics, ts_us) in data_list:
+#         yield voxel.cuda(), intrinsics.cuda(), ts_us
+
 
 def mvsec_evs_loader(scenedir, side="left", stride=1, H=260, W=346):
     intrinsics = np.loadtxt(os.path.join(scenedir, f"calib_undist_{side}.txt"))
