@@ -10,7 +10,7 @@ import h5py
 import tensorflow as tf
 import time
 import sys
-import hdf5plugin
+# import hdf5plugin
 
 H = 480
 W = 640
@@ -90,10 +90,10 @@ def save_evs_to_h5(xs, ys, ts, ps, evs_file_path, Cneg=0.2, Cpos=0.2, refractory
     }
 
     with h5py.File(evs_file_path, "w") as f:
-        f.create_dataset("x", data=xs, **hdf5plugin.Blosc(cname='zstd', clevel=compr_lvl, shuffle=hdf5plugin.Blosc.SHUFFLE)) 
-        f.create_dataset("y", data=ys, **hdf5plugin.Blosc(cname='zstd', clevel=compr_lvl, shuffle=hdf5plugin.Blosc.SHUFFLE)) 
-        f.create_dataset("t", data=ts, **hdf5plugin.Blosc(cname='zstd', clevel=compr_lvl, shuffle=hdf5plugin.Blosc.SHUFFLE)) 
-        f.create_dataset("p", data=ps, **hdf5plugin.Blosc(cname='zstd', clevel=compr_lvl, shuffle=hdf5plugin.Blosc.SHUFFLE))  
+        f.create_dataset("x", data=xs, chunks=(40000,), dtype=np.uint16, compression="lzf")
+        f.create_dataset("y", data=ys, chunks=(40000,), dtype=np.uint16, compression="lzf")
+        f.create_dataset("t", data=ts, chunks=(40000,), dtype=np.uint64, compression="lzf")
+        f.create_dataset("p", data=ps, chunks=(40000,), dtype=np.int8, compression="lzf")
         # TODO: ms_to_idx
 
     print(f"Saved {len(xs)} events to {evs_file_path}.")
@@ -156,7 +156,9 @@ def to_voxel_grid(xs, ys, ts, ps, nb_of_time_bins=5, remapping_maps=None):
 def save_voxels_to_h5(voxel, evs_file):
     voxel_float16 = voxel.to(torch.float16)
     with h5py.File(evs_file, "w") as f:
-        f.create_dataset("voxel", data=voxel_float16, **hdf5plugin.Blosc(cname='zstd', clevel=4, shuffle=hdf5plugin.Blosc.SHUFFLE))
+        f.create_dataset("voxel", data=voxel_float16, 
+                         chunks=(1, H, W), dtype=np.float16,
+                         compression="lzf")
 
 def convert_sequence(root, stereo="left"):
     assert stereo == "left" or stereo == "right"
@@ -338,11 +340,11 @@ def convert_sequence(root, stereo="left"):
 
 def main():
     parser = argparse.ArgumentParser(description="Raw to png images in dir")
-    parser.add_argument("--dirsfile", help="Input raw dir.", default="/DIRECTORY/test.txt")
+    # parser.add_argument("--dirsfile", help="Input raw dir.", default="/DIRECTORY/test.txt")
 
     args = parser.parse_args()
-    assert ".txt" in args.dirsfile
-    print(f"config file = {args.dirsfile}")
+    # assert ".txt" in args.dirsfile
+    # print(f"config file = {args.dirsfile}")
 
     # ROOTS = []
     # for root, dirs, files in os.walk("/DIRECTORY_FOR_TARTAN/tartan/"):
@@ -403,9 +405,12 @@ def main():
     #     file.close()
      
 
-    file = open(f"{args.dirsfile}", "r")
-    ROOTS = file.read().splitlines()
-    file.close()
+    # file = open(f"{args.dirsfile}", "r")
+    # ROOTS = file.read().splitlines()
+    # file.close()
+    ROOTS = [
+        "/local/richeek/tartanair_devo/abandonedfactory/Easy/P000/image_left",
+    ]
     print(f"convert_tartan.py: Processing {len(ROOTS)} dirs: {ROOTS}")
 
     print('A', sys.version)

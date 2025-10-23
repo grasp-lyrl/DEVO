@@ -2,18 +2,12 @@ import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from collections import OrderedDict
-
-import torch_scatter
-from torch_scatter import scatter_sum
-from torchvision.ops import batched_nms
 
 from . import fastba
 from . import altcorr
-from . import lietorch
 from .lietorch import SE3
 
-from .extractor import BasicEncoder, BasicEncoder4Evs
+from .extractor import BasicEncoder4Evs
 from .blocks import GradientClip, GatedResidual, SoftAgg
 from .selector import Scorer, SelectionMethod, PatchSelector
 
@@ -22,10 +16,8 @@ from .ba import BA
 from . import projective_ops as pops
 
 autocast = torch.cuda.amp.autocast
-import matplotlib.pyplot as plt
 
 from utils.voxel_utils import std, rescale, voxel_augment
-from utils.viz_utils import visualize_voxel, visualize_N_voxels, visualize_scorer_map
 
 DIM = 384 # default 384
 

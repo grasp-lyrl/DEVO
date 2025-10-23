@@ -518,7 +518,7 @@ std::vector<torch::Tensor> cuda_ba(
       S += I * (1e-4 * S + 1.0);
 
 
-      torch::Tensor U = torch::linalg::cholesky(S);
+      torch::Tensor U = torch::linalg_cholesky(S);
       torch::Tensor dX = torch::cholesky_solve(y, U);
       torch::Tensor dZ = Qt * (u - torch::matmul(Et, dX));
 

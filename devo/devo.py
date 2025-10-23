@@ -12,7 +12,7 @@ from .enet import eVONet
 from .utils import *
 from . import projective_ops as pops
 
-autocast = torch.cuda.amp.autocast
+autocast = torch.autocast
 Id = SE3.Identity(1, device="cuda")
 
 from utils.viz_utils import visualize_voxel
@@ -104,7 +104,7 @@ class DEVO:
         # load network from checkpoint file
         if isinstance(network, str):
             print(f"Loading from {network}")
-            checkpoint = torch.load(network)
+            checkpoint = torch.load(network, weights_only=False)
             # TODO infer dim_inet=self.dim_inet, dim_fnet=self.dim_fnet, dim=self.dim
             self.network = VONet(patch_selector=self.cfg.PATCH_SELECTOR) if not self.evs else \
                 eVONet(dim_inet=self.dim_inet, dim_fnet=self.dim_fnet, dim=self.dim, patch_selector=self.cfg.PATCH_SELECTOR)
@@ -247,7 +247,7 @@ class DEVO:
         net = torch.zeros(1, len(ii), self.dim_inet, **self.kwargs)
         coords = self.reproject(indicies=(ii, jj, kk))
 
-        with autocast(enabled=self.cfg.MIXED_PRECISION):
+        with autocast(enabled=self.cfg.MIXED_PRECISION, device_type="cuda"):
             corr = self.corr(coords, indicies=(kk, jj))
             ctx = self.imap[:,kk % (self.M * self.mem)]
             net, (delta, weight, _) = \
@@ -308,7 +308,7 @@ class DEVO:
     def update(self):
         coords = self.reproject()
 
-        with autocast(enabled=True):
+        with autocast(enabled=True, device_type="cuda"):
             
             corr = self.corr(coords)
             ctx = self.imap[:,self.kk % (self.M * self.mem)]
@@ -338,7 +338,7 @@ class DEVO:
                     target, weight, lmbda, self.ii, self.jj, self.kk, t0, self.n, 2)
             except:
                 print("Warning BA failed...")
-            
+
             points = pops.point_cloud(SE3(self.poses), self.patches[:, :self.m], self.intrinsics, self.ix[:self.m])
             points = (points[...,1,1,:3] / points[...,1,1,3:]).reshape(-1, 3)
             self.points_[:len(points)] = points[:]
@@ -474,7 +474,7 @@ class DEVO:
         # plt.show()
 
         # TODO patches with depth is available (val)
-        with autocast(enabled=self.cfg.MIXED_PRECISION):
+        with autocast(enabled=self.cfg.MIXED_PRECISION, device_type="cuda"):
             fmap, gmap, imap, patches, _, clr = \
                 self.network.patchify(image,
                     patches_per_image=self.cfg.PATCHES_PER_FRAME, 
