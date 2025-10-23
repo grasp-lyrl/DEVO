@@ -679,6 +679,39 @@ def get_ecd_data(tss_imgs_us, evs, intrinsics, rectify_map, DELTA_MS=None, H=180
     else:
         return data_list
 
+def get_ecd_image_data(tss_imgs_us, evs, images, intrinsics, rectify_map, DELTA_MS=None, H=180, W=240, return_dict=None):
+    print(f"Delta {DELTA_MS} ms")
+    data_list = []
+    for (ts_idx, ts_us) in enumerate(tss_imgs_us):
+        if ts_idx == len(tss_imgs_us) - 1:
+            break
+        
+        if DELTA_MS is None:
+            t0_us, t1_us = ts_us, tss_imgs_us[ts_idx+1]
+        else:
+            t0_us, t1_us = ts_us, ts_us + DELTA_MS*1e3
+        evs_idx = np.where((evs[:, 0] >= t0_us) & (evs[:, 0] < t1_us))[0]
+             
+        if len(evs_idx) == 0:
+            print(f"no events in range {ts_us*1e-3} - {tss_imgs_us[ts_idx+1]*1e-3} milisecs")
+            continue
+        evs_batch = np.array(evs[evs_idx, :]).copy()
+
+        if rectify_map is not None:
+            rect = rectify_map[evs_batch[:, 2].astype(np.int32), evs_batch[:, 1].astype(np.int32)]
+            voxel, evs_xytp = to_voxel_grid(rect[..., 0], rect[..., 1], evs_batch[:, 0], evs_batch[:, 3], H=H, W=W, nb_of_time_bins=5)
+        else:
+            voxel, evs_xytp = to_voxel_grid(evs_batch[:, 1], evs_batch[:, 2], evs_batch[:, 0], evs_batch[:, 3], H=H, W=W, nb_of_time_bins=5)
+        # visualize_voxel(voxel)
+        # img = render(evs_batch[:, 1], evs_batch[:, 2], evs_batch[:, 3], 180, 240) # 
+        image = images[ts_idx]
+        data_list.append((voxel, image, evs_xytp, intrinsics, min((t0_us+t1_us)/2, tss_imgs_us[ts_idx+1])))
+
+    if return_dict is not None:
+        return_dict.update({tss_imgs_us[0]: data_list})
+    else:
+        return data_list
+
 def read_rmap(rect_file, H=180, W=240):
     h5file = glob.glob(rect_file)[0]
     rmap = h5py.File(h5file, "r")
@@ -1382,6 +1415,100 @@ def fpv_evs_iterator(scenedir, stride=1, timing=False, dT_ms=None, H=260, W=346,
 
     for (voxel, intrinsics, ts_us) in data_list:
         yield voxel.cuda(), intrinsics.cuda(), ts_us
+        
+def fpv_evs_image_iterator(scenedir, stride=1, timing=False, dT_ms=None, H=260, W=346, parallel=False, cors=4, tss_gt_us=None):
+    if timing:
+        t0 = torch.cuda.Event(enable_timing=True)
+        t1 = torch.cuda.Event(enable_timing=True)
+        t0.record()
+
+    evs_file = glob.glob(osp.join(scenedir, "events.txt"))
+    assert len(evs_file) == 1
+    evs = np.asarray(np.loadtxt(evs_file[0], delimiter=" ")) # (N, 4) with [ts_sec, x, y, p]
+    evs[:, 0] = evs[:, 0] * 1e6
+
+    t_offset_us = np.loadtxt(os.path.join(scenedir, "t_offset_us.txt")).astype(np.int64)
+    evs[:, 0] -= t_offset_us
+
+    rect_file = osp.join(scenedir, "rectify_map.h5")
+    rectify_map = read_rmap(rect_file, H=H, W=W)
+
+    intrinsics = load_intrinsics_ecd(scenedir)
+    fx, fy, cx, cy = intrinsics 
+    intrinsics = torch.from_numpy(np.array([fx, fy, cx, cy]))
+    
+    images_txt_file = os.path.join(scenedir, "images.txt")
+    with open(images_txt_file, "r") as f:
+        # skip header
+        f.readline()
+        full_image_names = []
+        for line in f:
+            parts = line.strip().split()
+            if len(parts) >= 3:
+                img_path = parts[2]
+                img_filename = os.path.basename(img_path)
+                full_image_names.append(img_filename)
+
+    tss_imgs_us = sorted(np.loadtxt(osp.join(scenedir, "images_timestamps_us.txt")))
+    
+    assert len(tss_imgs_us) == len(full_image_names), f"Mismatch between number of images ({len(full_image_names)}) and timestamps ({len(tss_imgs_us)}) in {scenedir}"
+    
+    imstart = 0
+    imstop = -1
+    if tss_gt_us is not None: # fix for FPV
+        dT_imgs = tss_imgs_us[-1]-tss_imgs_us[0]
+        dT_gt = tss_gt_us[-1]-tss_gt_us[0]
+        if (dT_imgs - dT_gt) > 5*1e6 and (tss_gt_us[0] - tss_imgs_us[0]) > 5e6:
+            imstart = np.where(tss_imgs_us > tss_gt_us[0])[0][0]
+            imstop = np.where(tss_imgs_us < tss_gt_us[-1])[0][-1]
+            print(f"Start reading Voxel from {imstart}, {imstop}, due to much shorter GT")
+
+    if dT_ms is None:
+        dT_ms = np.mean(np.diff(tss_imgs_us)) / 1e3
+    assert dT_ms > 3 and dT_ms < 200
+
+    tss_imgs_us = tss_imgs_us[imstart:imstop:stride]
+    full_image_names = full_image_names[imstart:imstop:stride]
+    images = []
+    for img_name in full_image_names:
+        img_path = os.path.join(scenedir, "images_undistorted", img_name)
+        undist_img = cv2.imread(img_path, cv2.IMREAD_UNCHANGED)
+        if undist_img is None:
+            print(f"Warning: Could not read image {img_path}")
+            continue
+        images.append(undist_img)
+
+    if parallel:
+        tss_imgs_us_split = np.array_split(tss_imgs_us, cors)
+        evs_split = split_evs_list_by_tss_split(evs, tss_imgs_us_split)
+
+        processes = []
+        return_dict = multiprocessing.Manager().dict()      
+        for i in range(cors):
+            p = multiprocessing.Process(target=get_ecd_image_data, args=(tss_imgs_us_split[i].tolist(), evs_split[i], intrinsics, rectify_map, dT_ms, H, W, return_dict))
+            p.start()
+            processes.append(p)
+            
+        for p in processes:
+            p.join()
+
+        keys = np.array(return_dict.keys())
+        order = np.argsort(keys)
+        data_list = []
+        for k in keys[order]:
+            data_list.extend(return_dict[k])
+    else:
+        data_list = get_ecd_image_data(tss_imgs_us, evs, images, intrinsics, rectify_map, dT_ms, H, W)
+
+    if timing:
+        t1.record()
+        torch.cuda.synchronize()
+        dt = t0.elapsed_time(t1)/1e3
+        print(f"Preloaded {len(data_list)} FPV-UZH voxels in {dt} secs, e.g. {len(data_list)/dt} FPS")
+    print(f"Preloaded {len(data_list)} FPV-UZH voxels, imstart={imstart}, imstop={imstop}, stride={stride}, dT_ms={dT_ms} on {scenedir}")
+
+    for (voxel, image, evs_xytp, intrinsics, ts_us) in data_list:
+        yield voxel.cuda(), image, evs_xytp, intrinsics.cuda(), ts_us
 
 
 def get_calib_fpv(indir):
