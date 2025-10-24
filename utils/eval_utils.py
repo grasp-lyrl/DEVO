@@ -140,6 +140,39 @@ def run_voxel(voxeldir, cfg, network, viz=False, iterator=None, timing=False, H=
     return poses, tstamps, flowdata
 
 
+@torch.no_grad()
+def run_voxel_image(voxeldir, cfg, network, viz=False, iterator=None, timing=False, H=480, W=640, viz_flow=False, scale=1.0, **kwargs): 
+    slam = DEVO(cfg, network, evs=True, ht=H, wd=W, viz=viz, viz_flow=viz_flow, **kwargs)
+    
+    for i, (voxel, image, evs_xytp, intrinsics, t) in enumerate(iterator):
+        if timing and i == 0:
+            t0 = torch.cuda.Event(enable_timing=True)
+            t1 = torch.cuda.Event(enable_timing=True)
+            t0.record()
+
+        if viz: 
+            # import matplotlib.pyplot as plt
+            # plt.switch_backend('Qt5Agg')
+            visualize_voxel(voxel.detach().cpu())
+        
+        with Timer("DEVO", enabled=timing):
+            slam(t, voxel, intrinsics, scale=scale)
+
+    for _ in range(12):
+        slam.update()
+
+    poses, tstamps = slam.terminate()
+
+    if timing:
+        t1.record()
+        torch.cuda.synchronize()
+        dt = t0.elapsed_time(t1)/1e3
+        print(f"{voxeldir}\nDEVO Network {i+1} frames in {dt} sec, e.g. {(i+1)/dt} FPS")
+    
+    flowdata = slam.flow_data if viz_flow else None
+    return poses, tstamps, flowdata
+
+
 def assert_eval_config(args):
     assert os.path.isfile(args.weights) and (".pth" in args.weights or ".pt" in args.weights)
     assert os.path.isfile(args.val_split)

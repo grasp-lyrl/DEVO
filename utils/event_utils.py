@@ -177,7 +177,7 @@ class EventSlicer:
     
 
 
-def to_voxel_grid(xs, ys, ts, ps, H=480, W=640, nb_of_time_bins=5, remapping_maps=None):
+def to_voxel_grid(xs, ys, ts, ps, H=480, W=640, nb_of_time_bins=5, remapping_maps=None, include_xtyp=False):
     """Returns voxel grid representation of event steam. (5, H, W)
 
     In voxel grid representation, temporal dimension is
@@ -229,7 +229,10 @@ def to_voxel_grid(xs, ys, ts, ps, H=480, W=640, nb_of_time_bins=5, remapping_map
                 weight = polarity * (1-(lim_x-x).abs()) * (1-(lim_y-y).abs()) * (1-(lim_t-t).abs())
                 voxel_grid_flat.index_add_(dim=0, index=lin_idx[mask], source=weight[mask].float())
 
-    return voxel_grid
+    if include_xtyp:
+        return voxel_grid, (x.cpu().numpy(), y.cpu().numpy(), ts, ps)
+    else:
+        return voxel_grid
 
 
 class RemoveHotPixelsVoxel:
