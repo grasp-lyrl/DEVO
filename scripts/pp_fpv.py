@@ -71,11 +71,25 @@ def process_seq_fpv(indirs):
         else:
             tss_gt_us = tss_imgs_us.copy()
         
+        # --- IMU offset processing ---
+        imu_path = os.path.join(indir, "imu.txt")
+        imu_out_path = os.path.join(indir, "imu_offset.txt")
+        if os.path.isfile(imu_path):
+            with open(imu_path, 'r') as f:
+                imu_lines = [line for line in f if line.strip() and not line.startswith('#')]
+            imu_data = [line.split() for line in imu_lines]
+            imu_data = np.array(imu_data)
+            imu_timestamps = imu_data[:, 1].astype(np.float64)
+            imu_timestamps_us = imu_timestamps * 1e6
+        # --- END IMU offset processing ---
+
         if not os.path.isfile(os.path.join(indir, "t_offset_us.txt")):
-            offset_us = np.minimum(tss_evs_us.min(), np.minimum(tss_gt_us.min(), tss_imgs_us.min())).astype(np.int64)
-            print(f"Minimum/offset_us is {offset_us}. tss_evs_us.min() = {tss_evs_us.min()-offset_us},  tss_gt_us.min() = {tss_gt_us.min()-offset_us}, tss_imgs_us.min() = {tss_imgs_us.min()-offset_us}")
+            all_mins = [tss_evs_us.min(), tss_gt_us.min(), tss_imgs_us.min(), imu_timestamps_us.min()]
+            offset_us = np.min(all_mins).astype(np.int64)
             assert offset_us != 0 
             assert offset_us > 0
+
+            assert offset_us <= imu_timestamps_us.min()
 
             if has_gt:
                 tss_gt_us -= offset_us
@@ -88,11 +102,33 @@ def process_seq_fpv(indirs):
             evs[:, 0] -= offset_us
             tss_evs_us -= offset_us
             np.savetxt(os.path.join(indir, "t_offset_us.txt"), np.array([offset_us]))
+
+            # --- Apply offset to IMU ---
+            if imu_data is not None:
+                imu_timestamps_us = imu_timestamps_us - offset_us
+                if np.any(imu_timestamps_us < 0):
+                    raise ValueError('Negative IMU timestamps after offset! Check units and offset logic.')
+                imu_data[:, 1] = imu_timestamps_us.astype(str)
+                with open(imu_out_path, 'w') as f:
+                    for row in imu_data:
+                        f.write(' '.join(row) + '\n')
+            # --- END Apply offset to IMU ---
         else:
             offset_us = np.loadtxt(os.path.join(indir, "t_offset_us.txt")).astype(np.int64)
             print(f"Using offset_us = {offset_us}")
             evs[:, 0] -= offset_us
             assert evs[0, 0] < 1e6
+            # --- Apply offset to IMU (if not already done) ---
+            if imu_data is not None:
+                imu_timestamps_us = imu_timestamps_us - offset_us
+                if np.any(imu_timestamps_us < 0):
+                    print('imu_timestamps_us: ', imu_timestamps_us)
+                    raise ValueError('Negative IMU timestamps after offset! Check units and offset logic.')
+                imu_data[:, 1] = imu_timestamps_us.astype(str)
+                with open(imu_out_path, 'w') as f:
+                    for row in imu_data:
+                        f.write(' '.join(row) + '\n')
+            # --- END Apply offset to IMU ---
 
         # calib data
         Kdist, dist_coeffs, T_cam_imu = get_calib_fpv(indir)
